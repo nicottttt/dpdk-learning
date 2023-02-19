@@ -1,0 +1,4 @@
+首先编写好程序以及编译完之后，执行sudo ./usertool/dpdk-setup.sh
+然后执行43，44，45并且确定；执行46之后输入512，执行47之后输入512。
+在执行49之前先sudo ifconfig eth0 down，之后再去49bind相应的端口。
+所有完成之后便可以sudo ./build 下面执行相应的程序了
