@@ -1,0 +1,21 @@
+htonl()--"Host to Network Long"
+ntohl()--"Network to Host Long"
+htons()--"Host to Network Short"
+ntohs()--"Network to Host Short"
+
+在进行网络抓包时，抓到的包的数据是网络字节顺序，在进行编程时，要进行主机字节顺序和网络字节顺序间的转换。
+例如：
+（对一软件进行抓包时，写的一段小程序）
+ipp2p：
+
+   if(get_u16(payload,0)==__constant_htons(0x0600) 
+         && get_u32(payload,2)==(plen-6))
+   {
+     printk("identifing and datalen=%d /n",plen);
+     return(IPP2P_TEST*100+6);
+   }
+   
+网络字节是0x0600，而在主机内部所读的字节是0x06.
+
+简单而言，htons()是将一个数的高低位进行互换：(如:06 00 --> 00 06)
+
