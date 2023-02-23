@@ -11,9 +11,10 @@
 //ip,mac,port
 //define it as a global para means that only allow one client
 #if ENABLE_SEND
-#define MAKE_IPV4_ADDR(a, b, c, d) (a + (b<<8) + (c<<16) + (d<<24))
+#define MAKDE_IPV4_ADDR(a,b,c,d) (a+(b<<8)+(c<<16)+(d<<24))
 
-static uint32_t gLocalIp = MAKE_IPV4_ADDR(129, 104, 95, 11);
+static uint32_t gLocalIp=MAKDE_IPV4_ADDR(129,104,95,11);
+//static uint32_t gLocalIp=MAKDE_IPV4_ADDR(192,168,130,130);
 
 static uint32_t gSrcIp;
 static uint32_t gDstIp;
