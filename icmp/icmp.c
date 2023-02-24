@@ -70,7 +70,7 @@ static void ng_init_port(struct rte_mempool *mbuf_pool){//initialize
 
 };
 
-
+#if ENABLE_SEND
 static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_len){
 	//etherhdr:
 	struct rte_ether_hdr *eth=(struct rte_ether_hdr *)msg;
@@ -102,7 +102,7 @@ static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_l
 	udp->dgram_cksum=0;
 	udp->dgram_cksum=rte_ipv4_udptcp_cksum(ip,udp);
 
-	//to check the code:
+	// to check the code:
 	// struct in_addr addr;
 	// addr.s_addr=gSrcIp;
 	// printf("-->src: %s:%d, ",inet_ntoa(addr),ntohs(gSrcPort));
@@ -128,6 +128,8 @@ static struct rte_mbuf *udp_send(struct rte_mempool *mbuf_pool, uint8_t *data, u
 	ng_encode_udp_pkt(pktdata,data,total_len);//package it to udp pkt
 	return mbuf;
 }
+
+#endif
 
 #if ENABLE_ARP
 
@@ -283,6 +285,7 @@ int main(int argc, char*argv[]){
 		unsigned i=0;
 		for(i=0;i<num_recvd;i++){
 			struct rte_ether_hdr *ehdr=rte_pktmbuf_mtod(mbufs[i],struct rte_ether_hdr*);//analyze the ethernet header
+
 #if ENABLE_ARP
 			if(ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)){
 				struct rte_arp_hdr *ahdr=rte_pktmbuf_mtod_offset(mbufs[i],struct rte_arp_hdr *,sizeof(struct rte_ether_hdr));//offset the header of ethernet
@@ -312,26 +315,27 @@ int main(int argc, char*argv[]){
 				continue;//if not ipv4,then skip
 			}
 			
-			struct rte_ipv4_hdr *iphdr=rte_pktmbuf_mtod_offset(mbufs[i],struct rte_ipv4_hdr *,sizeof(struct rte_ether_hdr));
+			struct rte_ipv4_hdr *iphdr=rte_pktmbuf_mtod_offset(mbufs[i],struct rte_ipv4_hdr *,sizeof(struct rte_ether_hdr));//get the ip hdr
 
 			//udp
 			if(iphdr->next_proto_id==IPPROTO_UDP){
-				struct rte_udp_hdr *udphdr=(struct rte_udp_hdr *)((unsigned char*)iphdr+sizeof(struct rte_ipv4_hdr));
+				struct rte_udp_hdr *udphdr=(struct rte_udp_hdr *)((unsigned char*)iphdr+sizeof(struct rte_ipv4_hdr));//get the udp hdr,从iphdr开始偏移iphdr的长度
 				//printf("analyze the hdr of udp\n");
 
 
 //to do a filter to get the msg from the port 8080
-if(ntohs(udphdr->src_port)==8888){//ntohs!!!!!! it act as a filter
+if(ntohs(udphdr->src_port)==8888){//ntohs!!!!!! it act as a filter,两个字节以上就要进行转换,htons:host to the network; ntohs: network to the host
 
 
 #if ENABLE_SEND
-				rte_memcpy(gDstMac,ehdr->s_addr.addr_bytes,RTE_ETHER_ADDR_LEN);//the s_addr of the package is where we want to send, so put it as dst addr
-				rte_memcpy( &gSrcIp, &iphdr->dst_addr, sizeof(uint32_t));
+				rte_memcpy( gDstMac,ehdr->s_addr.addr_bytes,RTE_ETHER_ADDR_LEN);//the s_addr of the package is where we want to send, so put it as dst addr
+				rte_memcpy( &gSrcIp, &iphdr->dst_addr, sizeof(uint32_t));//32 bits iphdr
 				rte_memcpy( &gDstIp, &iphdr->src_addr, sizeof(uint32_t));
-				rte_memcpy( &gSrcPort, &udphdr->dst_port, sizeof(uint16_t));
+				rte_memcpy( &gSrcPort, &udphdr->dst_port, sizeof(uint16_t));//16 bits udphdr
 				rte_memcpy( &gDstPort, &udphdr->src_port, sizeof(uint16_t));
 #endif
 
+				//receive the udp pkt and print it
 				uint16_t length=ntohs(udphdr->dgram_len);
 				*((char*)udphdr+length)='\0';
 				//print
@@ -342,15 +346,15 @@ if(ntohs(udphdr->src_port)==8888){//ntohs!!!!!! it act as a filter
 				addr.s_addr=iphdr->dst_addr;
 				printf("dst: %s:%d, length:%d --> %s\n",inet_ntoa(addr),ntohs(udphdr->dst_port),length,(char *)(udphdr+1));
 								
-#if ENABLE_SEND
+#if ENABLE_SEND//send back to where it comes from
 					struct rte_mbuf *txbuf=udp_send(mbuf_pool,(uint8_t *)(udphdr+1),length);//udp +1, skip the udp header, directly to the data(payload)
 					rte_eth_tx_burst(gDpdkPortId,0,&txbuf,1);
 					rte_pktmbuf_free(txbuf);
 #endif
 			rte_pktmbuf_free(mbufs[i]);
-			}//only allow the msg from 8080 pass
+}//only allow the msg from 8080 pass
 
-			}//if end
+			}//udp if end
 			
 #if ENABLE_ICMP//icmp is on the same layer of udp
 
@@ -372,7 +376,7 @@ if(ntohs(udphdr->src_port)==8888){//ntohs!!!!!! it act as a filter
 					rte_pktmbuf_free(mbufs[i]);
 				}
 
-			}
+			}//icmp if end
 
 #endif
 		}// for end

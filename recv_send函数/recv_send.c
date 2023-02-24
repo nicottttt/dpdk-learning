@@ -63,7 +63,8 @@ static void ng_init_port(struct rte_mempool *mbuf_pool){//initialize
 
 };
 
-
+#if ENABLE_SEND
+//package udp pkt
 static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_len){
 	//etherhdr:
 	struct rte_ether_hdr *eth=(struct rte_ether_hdr *)msg;
@@ -121,6 +122,8 @@ static struct rte_mbuf *ng_send(struct rte_mempool *mbuf_pool, uint8_t *data, ui
 	ng_encode_udp_pkt(pktdata,data,total_len);//package it to udp pkt
 	return mbuf;
 }
+#endif
+
 
 int main(int argc, char*argv[]){
 	if(rte_eal_init(argc,argv)<0){
