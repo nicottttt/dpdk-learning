@@ -7,6 +7,7 @@
 #define NUM_MBUFS (4096-1)
 #define ENABLE_SEND 1
 #define ENABLE_ARP 1
+#define ENABLE_ICMP 1
 
 //ip,mac,port
 //define it as a global para means that only allow one client
@@ -129,45 +130,131 @@ static struct rte_mbuf *udp_send(struct rte_mempool *mbuf_pool, uint8_t *data, u
 }
 
 #if ENABLE_ARP
-	static int ng_encode_arp_pkt(uint8_t *msg, uint8_t *dst_mac, uint32_t sip, uint32_t dip){
-		//etherhdr:
-		struct rte_ether_hdr *eth=(struct rte_ether_hdr *)msg;
-		rte_memcpy(eth->s_addr.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
-		rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
-		eth->ether_type=htons(RTE_ETHER_TYPE_ARP);
 
-		//arp hdr:
-		struct rte_arp_hdr *arp=(struct rte_arp_hdr *)(eth+1);
-		arp->arp_hardware=htons(1);
-		arp->arp_protocol=htons(RTE_ETHER_TYPE_IPV4);
-		arp->arp_hlen=RTE_ETHER_ADDR_LEN;
-		arp->arp_plen=sizeof(uint32_t);
-		arp->arp_opcode=htons(2);
-		rte_memcpy(arp->arp_data.arp_sha.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
-		rte_memcpy(arp->arp_data.arp_tha.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
-		arp->arp_data.arp_sip=sip;
-		arp->arp_data.arp_tip=dip;
+static int ng_encode_arp_pkt(uint8_t *msg, uint8_t *dst_mac, uint32_t sip, uint32_t dip){
+	//it is a network layer protocol, includes ether hdr, arp hdr
 
-		return 0;
+	//etherhdr:
+	struct rte_ether_hdr *eth=(struct rte_ether_hdr *)msg;
+	rte_memcpy(eth->s_addr.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
+	rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+	eth->ether_type=htons(RTE_ETHER_TYPE_ARP);
+
+	//arp hdr:
+	struct rte_arp_hdr *arp=(struct rte_arp_hdr *)(eth+1);
+	arp->arp_hardware=htons(1);
+	arp->arp_protocol=htons(RTE_ETHER_TYPE_IPV4);
+	arp->arp_hlen=RTE_ETHER_ADDR_LEN;
+	arp->arp_plen=sizeof(uint32_t);
+	arp->arp_opcode=htons(2);
+	rte_memcpy(arp->arp_data.arp_sha.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
+	rte_memcpy(arp->arp_data.arp_tha.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+	arp->arp_data.arp_sip=sip;
+	arp->arp_data.arp_tip=dip;
+
+	return 0;
+}
+
+static struct rte_mbuf *arp_send(struct rte_mempool *mbuf_pool, uint8_t *dst_mac,uint32_t sip,uint32_t dip){
+	const unsigned total_length=sizeof(struct rte_ether_hdr)+sizeof(struct rte_arp_hdr);//14+28
+	//allocate some mem for the buf
+	struct rte_mbuf *mbuf=rte_pktmbuf_alloc(mbuf_pool);
+	if(!mbuf){
+		rte_exit(EXIT_FAILURE,"Allocate memory wrong\n");
 	}
 
-	static struct rte_mbuf *arp_send(struct rte_mempool *mbuf_pool, uint8_t *dst_mac,uint32_t sip,uint32_t dip){
-		const unsigned total_length=sizeof(struct rte_ether_hdr)+sizeof(struct rte_arp_hdr);//14+28
-		//allocate some mem for the buf
-		struct rte_mbuf *mbuf=rte_pktmbuf_alloc(mbuf_pool);
-		if(!mbuf){
-			rte_exit(EXIT_FAILURE,"Allocate memory wrong\n");
-		}
+	mbuf->pkt_len=total_length;
+	mbuf->data_len=total_length;
 
-		mbuf->pkt_len=total_length;
-		mbuf->data_len=total_length;
+	uint8_t *pkt_data=rte_pktmbuf_mtod(mbuf,uint8_t *);
+	ng_encode_arp_pkt(pkt_data, dst_mac, sip, dip);
 
-		uint8_t *pkt_data=rte_pktmbuf_mtod(mbuf,uint8_t *);
-		ng_encode_arp_pkt(pkt_data, dst_mac, sip, dip);
+	return mbuf;
 
-		return mbuf;
+}
 
+#endif
+
+#if ENABLE_ICMP
+
+//cksum for icmp
+static uint16_t ng_checksum(uint16_t *addr, int count) {
+
+	register long sum = 0;
+
+	while (count > 1) {
+
+		sum += *(unsigned short*)addr++;
+		count -= 2;
+	
 	}
+
+	if (count > 0) {
+		sum += *(unsigned char *)addr;
+	}
+
+	while (sum >> 16) {
+		sum = (sum & 0xffff) + (sum >> 16);
+	}
+
+	return ~sum;
+}
+
+
+static int ng_encode_icmp_pkt(uint8_t *msg, uint8_t *dst_mac, uint32_t sip, uint32_t dip,uint16_t id,uint16_t seqnum){
+	//it is an transportation layer protocol, include 3 header: ether, ip, icmp
+
+	//ether hdr
+	struct rte_ether_hdr *eth=(struct rte_ether_hdr *)msg;
+	rte_memcpy(eth->s_addr.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
+	rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+	eth->ether_type=htons(RTE_ETHER_TYPE_IPV4);//define the network layer protocol
+
+	//ip hdr
+	struct rte_ipv4_hdr *ip=(struct rte_ipv4_hdr *)(msg+sizeof(struct rte_ether_hdr));//set the offset
+	ip->version_ihl= 0x45;
+	ip->type_of_service= 0;
+	ip->total_length = htons(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr));
+	ip->packet_id=0;
+	ip->fragment_offset=0;
+	ip->time_to_live=64;//default value is 64
+	ip->next_proto_id=IPPROTO_ICMP;//define the application layer protocol
+	ip->src_addr=sip;
+	ip->dst_addr=dip;
+	ip->hdr_checksum=0;//first set to 0
+	ip->hdr_checksum=rte_ipv4_cksum(ip);
+
+
+	//icmp hdr
+	struct rte_icmp_hdr *icmp=(struct rte_icmp_hdr *)(msg+sizeof(struct rte_ether_hdr)+sizeof(struct rte_ipv4_hdr));//offset the ether header and the ip header
+	icmp->icmp_type=RTE_IP_ICMP_ECHO_REPLY;
+	icmp->icmp_code=0;
+	icmp->icmp_ident=id;
+	icmp->icmp_seq_nb= seqnum;
+	icmp->icmp_cksum=0;
+	icmp->icmp_cksum = ng_checksum((uint16_t*)icmp, sizeof(struct rte_icmp_hdr));
+	return 0;
+}
+
+
+static struct rte_mbuf *ng_send_icmp(struct rte_mempool *mbuf_pool,uint8_t *dst_mac,uint32_t sip,uint32_t dip,uint16_t id,uint16_t seqnum){
+	const unsigned total_length=sizeof(struct rte_ether_hdr)+sizeof(struct rte_ipv4_hdr)+sizeof(struct rte_icmp_hdr);
+	//allocate some mem for the buf
+	struct rte_mbuf *mbuf=rte_pktmbuf_alloc(mbuf_pool);
+	if(!mbuf){
+		rte_exit(EXIT_FAILURE,"Allocate memory wrong\n");
+	}
+	
+	mbuf->pkt_len=total_length;
+	mbuf->data_len=total_length;
+
+	uint8_t *pkt_data=rte_pktmbuf_mtod(mbuf,uint8_t *);
+	ng_encode_icmp_pkt(pkt_data, dst_mac, sip, dip, id, seqnum);
+
+	return mbuf;
+
+}
+
 #endif
 
 
@@ -195,7 +282,7 @@ int main(int argc, char*argv[]){
 
 		unsigned i=0;
 		for(i=0;i<num_recvd;i++){
-			struct rte_ether_hdr *ehdr=rte_pktmbuf_mtod(mbufs[i],struct rte_ether_hdr*);
+			struct rte_ether_hdr *ehdr=rte_pktmbuf_mtod(mbufs[i],struct rte_ether_hdr*);//analyze the ethernet header
 #if ENABLE_ARP
 			if(ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)){
 				struct rte_arp_hdr *ahdr=rte_pktmbuf_mtod_offset(mbufs[i],struct rte_arp_hdr *,sizeof(struct rte_ether_hdr));//offset the header of ethernet
@@ -207,7 +294,7 @@ int main(int argc, char*argv[]){
 				if(ahdr->arp_data.arp_tip==gLocalIp){//only response to the host ip
 					struct in_addr addr;
 					addr.s_addr=ahdr->arp_data.arp_tip;
-					printf("arp------->: %s\n, ",inet_ntoa(addr));
+					printf("arp------->: %s\n ",inet_ntoa(addr));
 
 					struct rte_mbuf *arpbuf= arp_send(mbuf_pool, ahdr->arp_data.arp_sha.addr_bytes, ahdr->arp_data.arp_tip, ahdr->arp_data.arp_sip);
 					rte_eth_tx_burst(gDpdkPortId,0,&arpbuf,1);
@@ -215,7 +302,7 @@ int main(int argc, char*argv[]){
 					rte_pktmbuf_free(mbufs[i]);
 				}
 
-				continue;
+				//continue;
 			}
 #endif
 
@@ -224,13 +311,17 @@ int main(int argc, char*argv[]){
 				rte_pktmbuf_free(mbufs[i]);
 				continue;//if not ipv4,then skip
 			}
+			
 			struct rte_ipv4_hdr *iphdr=rte_pktmbuf_mtod_offset(mbufs[i],struct rte_ipv4_hdr *,sizeof(struct rte_ether_hdr));
+
+			//udp
 			if(iphdr->next_proto_id==IPPROTO_UDP){
 				struct rte_udp_hdr *udphdr=(struct rte_udp_hdr *)((unsigned char*)iphdr+sizeof(struct rte_ipv4_hdr));
+				//printf("analyze the hdr of udp\n");
 
 
 //to do a filter to get the msg from the port 8080
-//if(udphdr->src_port==8080){
+if(ntohs(udphdr->src_port)==8888){//ntohs!!!!!! it act as a filter
 
 
 #if ENABLE_SEND
@@ -244,21 +335,46 @@ int main(int argc, char*argv[]){
 				uint16_t length=ntohs(udphdr->dgram_len);
 				*((char*)udphdr+length)='\0';
 				//print
+				printf("Start receiving and send back:\n");
 				struct in_addr addr;
 				addr.s_addr=iphdr->src_addr;
 				printf("src: %s:%d, ",inet_ntoa(addr),ntohs(udphdr->src_port));
 				addr.s_addr=iphdr->dst_addr;
-				printf("dst: %s:%d, length:%d --> %s\n ",inet_ntoa(addr),ntohs(udphdr->dst_port),length,(char *)(udphdr+1));
+				printf("dst: %s:%d, length:%d --> %s\n",inet_ntoa(addr),ntohs(udphdr->dst_port),length,(char *)(udphdr+1));
 								
 #if ENABLE_SEND
 					struct rte_mbuf *txbuf=udp_send(mbuf_pool,(uint8_t *)(udphdr+1),length);//udp +1, skip the udp header, directly to the data(payload)
 					rte_eth_tx_burst(gDpdkPortId,0,&txbuf,1);
 					rte_pktmbuf_free(txbuf);
 #endif
-
-}//only get the port number = 8080 msg
 			rte_pktmbuf_free(mbufs[i]);
-			//}//if end
+			}//only allow the msg from 8080 pass
+
+			}//if end
+			
+#if ENABLE_ICMP//icmp is on the same layer of udp
+
+			if(iphdr->next_proto_id==IPPROTO_ICMP){//icmp
+				struct rte_icmp_hdr *icmphdr=(struct rte_icmp_hdr *)(iphdr + 1);
+				if(icmphdr->icmp_type==RTE_IP_ICMP_ECHO_REQUEST){
+					//print the msg:
+					printf("Get the icmp pkt:\n");
+					struct in_addr addr;
+					addr.s_addr=iphdr->src_addr;
+					printf("icmp:src----->: %s ",inet_ntoa(addr));
+					addr.s_addr=iphdr->dst_addr;
+					printf("icmp:dst----->: %s\n",inet_ntoa(addr));
+					
+					struct rte_mbuf *txbuf=ng_send_icmp(mbuf_pool, ehdr->s_addr.addr_bytes, iphdr->dst_addr, iphdr->src_addr, icmphdr->icmp_ident, icmphdr->icmp_seq_nb);
+					rte_eth_tx_burst(gDpdkPortId,0,&txbuf,1);
+					rte_pktmbuf_free(txbuf);
+
+					rte_pktmbuf_free(mbufs[i]);
+				}
+
+			}
+
+#endif
 		}// for end
 	
 
