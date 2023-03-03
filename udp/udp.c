@@ -2,8 +2,8 @@
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 #include <stdio.h>
-#include <arpa/inet.h>
 #include "arp.h"
+#include <arpa/inet.h>
 #include <rte_malloc.h>
 #include <rte_timer.h>
 
@@ -19,14 +19,15 @@
 #define RING_SIZE 1024
 #define ENABLE_MULTITHREAD 1
 #define BURST_SIZE	32
+#define ENABLE_UDP_APP 1
+#define UDP_APP_RECV_BUFFER_SIZE 128
 
 #if ENABLE_SEND
 //ip,mac,port
 //define it as a global para means that only allow one client
-#define MAKDE_IPV4_ADDR(a,b,c,d) (a+(b<<8)+(c<<16)+(d<<24))
+#define MAKDE_IPV4_ADDR(a,b,c,d) (a+(b<<8)+(c<<16)+(d<<24))//ipadress
 
 static uint32_t gLocalIp=MAKDE_IPV4_ADDR(129,104,95,11);
-//static uint32_t gLocalIp=MAKDE_IPV4_ADDR(192,168,130,130);
 
 static uint32_t gSrcIp;
 static uint32_t gDstIp;
@@ -44,6 +45,7 @@ static uint8_t gDefaultArpMac[RTE_ETHER_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xF
 
 #endif
 
+//
 #if ENABLE_RINGBUFFER
 struct inout_ring{
 	struct rte_ring *inring;
@@ -52,6 +54,7 @@ struct inout_ring{
 
 static struct inout_ring *rInst=NULL;
 
+//initialize
 static struct inout_ring *ringInstance(void){
 	if(rInst==NULL){
 		rInst=rte_malloc("in/out ring", sizeof(struct inout_ring), 0);
@@ -107,45 +110,54 @@ static void ng_init_port(struct rte_mempool *mbuf_pool){//initialize
 };
 
 #if ENABLE_SEND
-static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_len){
-	//etherhdr:
-	struct rte_ether_hdr *eth=(struct rte_ether_hdr *)msg;
+
+static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_len) {
+
+	// encode 
+
+	// 1 ethhdr
+	struct rte_ether_hdr *eth = (struct rte_ether_hdr *)msg;
 	rte_memcpy(eth->s_addr.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
 	rte_memcpy(eth->d_addr.addr_bytes, gDstMac, RTE_ETHER_ADDR_LEN);
-	eth->ether_type=htons(RTE_ETHER_TYPE_IPV4);
+	eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+	
 
-	//iphdr:
-	struct rte_ipv4_hdr *ip=(struct rte_ipv4_hdr *)(msg+sizeof(struct rte_ether_hdr));//set the offset
-	ip->version_ihl= 0x45;
-	ip->type_of_service= 0;
+	// 2 iphdr 
+	struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(msg + sizeof(struct rte_ether_hdr));
+	ip->version_ihl = 0x45;
+	ip->type_of_service = 0;
 	ip->total_length = htons(total_len - sizeof(struct rte_ether_hdr));
-	ip->packet_id=0;
-	ip->fragment_offset=0;
-	ip->time_to_live=64;//default value is 64
-	ip->next_proto_id=IPPROTO_UDP;
-	ip->src_addr=gSrcIp;
-	ip->dst_addr=gDstIp;
-	ip->hdr_checksum=0;//first set to 0
-	ip->hdr_checksum=rte_ipv4_cksum(ip);
+	ip->packet_id = 0;
+	ip->fragment_offset = 0;
+	ip->time_to_live = 64; // ttl = 64
+	ip->next_proto_id = IPPROTO_UDP;
+	ip->src_addr = gSrcIp;
+	ip->dst_addr = gDstIp;
+	
+	ip->hdr_checksum = 0;
+	ip->hdr_checksum = rte_ipv4_cksum(ip);
 
-	//udphdr:
-	struct rte_udp_hdr *udp=(struct rte_udp_hdr *)(msg+sizeof(struct rte_ether_hdr)+sizeof(struct rte_ipv4_hdr));
-	udp->src_port=gSrcPort;
-	udp->dst_port=gDstPort;
-	uint16_t udplen=total_len-sizeof(struct rte_ether_hdr)-sizeof(struct rte_ipv4_hdr);
-	udp->dgram_len=htons(udplen);
-	rte_memcpy((uint8_t*)(udp+1),data,udplen);//udp+1, go to the data part
-	udp->dgram_cksum=0;
-	udp->dgram_cksum=rte_ipv4_udptcp_cksum(ip,udp);
+	// 3 udphdr 
 
-	// to check the code:
-	// struct in_addr addr;
-	// addr.s_addr=gSrcIp;
-	// printf("-->src: %s:%d, ",inet_ntoa(addr),ntohs(gSrcPort));
-	// addr.s_addr=gDstIp;
-	// printf("dst: %s:%d\n ",inet_ntoa(addr),ntohs(gDstPort));
+	struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(msg + sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+	udp->src_port = gSrcPort;
+	udp->dst_port = gDstPort;
+	uint16_t udplen = total_len - sizeof(struct rte_ether_hdr) - sizeof(struct rte_ipv4_hdr);
+	udp->dgram_len = htons(udplen);
 
-	return 0; 	
+	rte_memcpy((uint8_t*)(udp+1), data, udplen);
+
+	udp->dgram_cksum = 0;
+	udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);
+
+	struct in_addr addr;
+	addr.s_addr = gSrcIp;
+	printf(" --> src: %s:%d, ", inet_ntoa(addr), ntohs(gSrcPort));
+
+	addr.s_addr = gDstIp;
+	printf("dst: %s:%d\n", inet_ntoa(addr), ntohs(gDstPort));
+
+	return 0;
 }
 
 //send msg(after receiving)
@@ -310,6 +322,7 @@ static void print_ethaddr(const char *name, const struct rte_ether_addr *eth_add
 	printf("%s%s", name, buf);
 }
 
+
 #if ENABLE_TIMER
 
 static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg) {
@@ -317,9 +330,7 @@ static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, 
 	struct rte_mempool *mbuf_pool = (struct rte_mempool *)arg;
 	struct inout_ring *ring=ringInstance();
 #if 0
-	struct rte_mbuf *arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, ahdr->arp_data.arp_sha.addr_bytes, 
-		ahdr->arp_data.arp_tip, ahdr->arp_data.arp_sip);
-
+	struct rte_mbuf *arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, ahdr->arp_data.arp_sha.addr_bytes, ahdr->arp_data.arp_tip, ahdr->arp_data.arp_sip);
 	rte_eth_tx_burst(gDpdkPortId, 0, &arpbuf, 1);
 	rte_pktmbuf_free(arpbuf);
 
@@ -360,7 +371,215 @@ static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, 
 
 #endif
 
+
+
 #if ENABLE_MULTITHREAD
+
+#if ENABLE_UDP_APP
+
+struct localhost{
+
+	int fd;
+	//unsigned int status;
+	uint32_t localip;
+	uint8_t localmac[RTE_ETHER_ADDR_LEN];
+	uint16_t localport;
+	int protocol;
+
+	struct rte_ring *sndbuffer;
+	struct rte_ring *rcvbuffer;
+
+	struct localhost *prev;
+	struct localhost *next;
+
+	pthread_cond_t cond;
+	pthread_mutex_t mutex;
+
+};
+
+static struct localhost *lhost=NULL;
+
+#define DEFAULT_FD_NUM 3
+
+static int get_fd_frombitmap(void) {
+	int fd = DEFAULT_FD_NUM;
+	return fd;
+}
+
+static struct localhost * get_hostinfo_fromip_port(uint32_t dip, uint16_t port, uint8_t proto) {
+
+	struct localhost *host;
+
+	for (host = lhost; host != NULL;host = host->next) {
+		if (dip == host->localip && port == host->localport && proto == host->protocol) {
+			return host;
+		}
+	}
+	return NULL;
+	
+}
+
+static int ng_encode_udp_apppkt(uint8_t *msg, uint32_t sip, uint32_t dip,
+	uint16_t sport, uint16_t dport, uint8_t *srcmac, uint8_t *dstmac,
+	unsigned char *data, uint16_t total_len) {
+
+	// encode 
+
+	// 1 ethhdr
+	struct rte_ether_hdr *eth = (struct rte_ether_hdr *)msg;
+	rte_memcpy(eth->s_addr.addr_bytes, srcmac, RTE_ETHER_ADDR_LEN);
+	rte_memcpy(eth->d_addr.addr_bytes, dstmac, RTE_ETHER_ADDR_LEN);
+	eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+	
+
+	// 2 iphdr 
+	struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(msg + sizeof(struct rte_ether_hdr));
+	ip->version_ihl = 0x45;
+	ip->type_of_service = 0;
+	ip->total_length = htons(total_len - sizeof(struct rte_ether_hdr));
+	ip->packet_id = 0;
+	ip->fragment_offset = 0;
+	ip->time_to_live = 64; // ttl = 64
+	ip->next_proto_id = IPPROTO_UDP;
+	ip->src_addr = sip;
+	ip->dst_addr = dip;
+	
+	ip->hdr_checksum = 0;
+	ip->hdr_checksum = rte_ipv4_cksum(ip);
+
+	// 3 udphdr 
+
+	struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(msg + sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+	udp->src_port = sport;
+	udp->dst_port = dport;
+	uint16_t udplen = total_len - sizeof(struct rte_ether_hdr) - sizeof(struct rte_ipv4_hdr);
+	udp->dgram_len = htons(udplen);
+
+	rte_memcpy((uint8_t*)(udp+1), data, udplen);
+
+	udp->dgram_cksum = 0;
+	udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);
+
+	return 0;
+}
+
+static struct rte_mbuf * ng_udp_pkt(struct rte_mempool *mbuf_pool, uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport, uint8_t *srcmac, uint8_t *dstmac, uint8_t *data, uint16_t length) {
+
+	// mempool --> mbuf
+
+	const unsigned total_len = length + 42;
+
+	struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
+	if (!mbuf) {
+		rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc\n");
+	}
+	mbuf->pkt_len = total_len;
+	mbuf->data_len = total_len;
+
+	uint8_t *pktdata = rte_pktmbuf_mtod(mbuf, uint8_t*);
+
+	ng_encode_udp_apppkt(pktdata, sip, dip, sport, dport, srcmac, dstmac, data, total_len);
+
+	return mbuf;
+
+}
+
+struct offload{//udp packet
+
+	uint32_t sip;
+	uint32_t dip;
+	uint16_t sport;
+	uint16_t dport;
+	uint8_t protocol;
+	unsigned char *data;
+	uint16_t length;
+
+};
+
+static int udp_process(struct rte_mbuf *udpmbuf){
+
+	struct rte_ipv4_hdr *iphdr=rte_pktmbuf_mtod_offset(udpmbuf ,struct rte_ipv4_hdr *,sizeof(struct rte_ether_hdr));//get the ip hdr
+	struct rte_udp_hdr *udphdr=(struct rte_udp_hdr *)(iphdr+1);//get the udp hdr,从iphdr开始偏移iphdr的长度
+
+	struct localhost *host=get_hostinfo_fromip_port(iphdr->dst_addr, udphdr->dst_port, iphdr->next_proto_id );
+	if(host==NULL){//if dont find, just exit  
+		rte_pktmbuf_free(udpmbuf);
+		return -3; 
+	}
+
+	struct offload *ol=rte_malloc("offload", sizeof(struct offload),0);
+	if(ol==NULL){
+		rte_pktmbuf_free(udpmbuf);
+		return -1;
+	}
+
+	ol->dip=iphdr->dst_addr;
+	ol->sip=iphdr->src_addr;
+	ol->dport=udphdr->dst_port;
+	ol->sport=udphdr->src_port;
+	ol->protocol=IPPROTO_UDP;
+	ol->length=ntohs(udphdr->dgram_len);
+
+	ol->data=rte_malloc("unsigned cahr*", ol->length -sizeof(struct rte_udp_hdr),0);
+	if(ol->data==NULL){
+		rte_pktmbuf_free(udpmbuf);
+		rte_free(ol);
+		return -2;
+	}
+
+	rte_memcpy(ol->data, (unsigned char *)(udphdr+1), ol->length - sizeof(struct rte_udp_hdr));
+	rte_ring_mp_enqueue(host->rcvbuffer, ol);//push into the udp server recv buffer 
+
+	//wake the thread here after enqueue some elements in the queue
+	pthread_mutex_lock(&host->mutex);
+	pthread_cond_signal(&host->cond);
+	pthread_mutex_unlock(&host->mutex);
+
+	rte_pktmbuf_free(udpmbuf);
+	return 0;
+
+}
+
+//offload--->mbufs
+static int udp_out(struct rte_mempool *mbuf_pool){
+
+	struct localhost *host;
+	for (host = lhost; host != NULL; host = host->next) {
+
+		struct offload *ol;
+		int nb_snd = rte_ring_mc_dequeue(host->sndbuffer, (void **)&ol);
+		if (nb_snd < 0) continue;
+
+		struct in_addr addr;
+		addr.s_addr = ol->dip;
+		printf("udp_out ---> src: %s:%d \n", inet_ntoa(addr), ntohs(ol->dport));
+			
+		uint8_t *dstmac = ng_get_dst_macaddr(ol->dip);
+		if (dstmac == NULL) {//if there is no mac adress in arp table, send an arp request
+
+			struct rte_mbuf *arpbuf = arp_send(mbuf_pool, RTE_ARP_OP_REQUEST, gDefaultArpMac, ol->sip, ol->dip);
+
+			struct inout_ring *ring = ringInstance();
+			rte_ring_mp_enqueue_burst(ring->outring, (void **)&arpbuf, 1, NULL);//put the arp msg into the out ring buffer
+
+			rte_ring_mp_enqueue(host->sndbuffer, ol);//here put the msg back to the snd buffer because we must send the arp msg first and get the mac adress
+			
+		} else {
+			//package an udp pkt
+			struct rte_mbuf *udpbuf = ng_udp_pkt(mbuf_pool, ol->sip, ol->dip, ol->sport, ol->dport, host->localmac, dstmac, ol->data, ol->length);
+			struct inout_ring *ring = ringInstance();
+			rte_ring_mp_enqueue_burst(ring->outring, (void **)&udpbuf, 1, NULL);//put the udp pkt into the out ring buffer
+
+		}
+		
+	}
+
+	return 0;
+
+}
+
+
+#endif
 
 static int pkt_process(void *arg) {
 
@@ -369,7 +588,7 @@ static int pkt_process(void *arg) {
 	while(1){
 
 		struct rte_mbuf *mbufs[BURST_SIZE];
-		unsigned num_recvd = rte_ring_mc_dequeue_burst(ring->inring, (void**)mbufs, BURST_SIZE, NULL);
+		unsigned num_recvd = rte_ring_mc_dequeue_burst(ring->inring, (void**)mbufs, BURST_SIZE, NULL);//pop the msg in the ring buffer
 
 
 		//analyze the pkt
@@ -387,7 +606,7 @@ static int pkt_process(void *arg) {
 
 				if(ahdr->arp_data.arp_tip==gLocalIp){//only response to the host ip
 
-					if(ahdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)){//deal with request msg
+					if(ahdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)){//deal with arp request msg
 						struct in_addr addr;
 						addr.s_addr=ahdr->arp_data.arp_tip;
 						printf("arp---request>: %s\n ",inet_ntoa(addr));
@@ -396,7 +615,7 @@ static int pkt_process(void *arg) {
 						rte_ring_mp_enqueue_burst(ring->outring, (void**)&arpbuf, 1, NULL); 
 						rte_pktmbuf_free(arpbuf);
 						
-					}else if(ahdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)){//receive repley msg, put the adress into the arp table
+					}else if(ahdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)){//receive arp repley msg, put the adress into the arp table
 						
 						printf("arp --> reply\n");
 
@@ -421,7 +640,6 @@ static int pkt_process(void *arg) {
 						
 #if ENABLE_DEBUG
 						struct arp_entry *iter;
-						printf("start to analyze the arp_table\n");
 						for (iter = table->entries; iter != NULL; iter = iter->next) {
 							struct in_addr addr;
 							addr.s_addr = iter->ip;
@@ -440,7 +658,7 @@ static int pkt_process(void *arg) {
 			}//end if(ehdr->ether_type....
 #endif
 
-
+//udp
 			if(ehdr->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)){
 				rte_pktmbuf_free(mbufs[i]);
 				continue;//if not ipv4,then skip
@@ -450,40 +668,8 @@ static int pkt_process(void *arg) {
 
 			//udp
 			if(iphdr->next_proto_id==IPPROTO_UDP){
-				struct rte_udp_hdr *udphdr=(struct rte_udp_hdr *)((unsigned char*)iphdr+sizeof(struct rte_ipv4_hdr));//get the udp hdr,从iphdr开始偏移iphdr的长度
-				//printf("analyze the hdr of udp\n");
-
-
-//to do a filter to get the msg from the port 8080
-if(ntohs(udphdr->src_port)==8888){//ntohs!!!!!! it act as a filter,两个字节以上就要进行转换,htons:host to the network; ntohs: network to the host
-
-
-#if ENABLE_SEND
-				rte_memcpy( gDstMac,ehdr->s_addr.addr_bytes,RTE_ETHER_ADDR_LEN);//the s_addr of the package is where we want to send, so put it as dst addr
-				rte_memcpy( &gSrcIp, &iphdr->dst_addr, sizeof(uint32_t));//32 bits iphdr
-				rte_memcpy( &gDstIp, &iphdr->src_addr, sizeof(uint32_t));
-				rte_memcpy( &gSrcPort, &udphdr->dst_port, sizeof(uint16_t));//16 bits udphdr
-				rte_memcpy( &gDstPort, &udphdr->src_port, sizeof(uint16_t));
-#endif
-
-				//receive the udp pkt and print it
-				uint16_t length=ntohs(udphdr->dgram_len);
-				*((char*)udphdr+length)='\0';
-				//print
-				printf("Start receiving and send back:\n");
-				struct in_addr addr;
-				addr.s_addr=iphdr->src_addr;
-				printf("src: %s:%d, ",inet_ntoa(addr),ntohs(udphdr->src_port));
-				addr.s_addr=iphdr->dst_addr;
-				printf("dst: %s:%d, length:%d --> %s\n",inet_ntoa(addr),ntohs(udphdr->dst_port),length,(char *)(udphdr+1));
-								
-#if ENABLE_SEND//send back to where it comes from
-					struct rte_mbuf *txbuf=udp_send(mbuf_pool,(uint8_t *)(udphdr+1),length);//udp +1, skip the udp header, directly to the data(payload)
-					rte_ring_mp_enqueue_burst(ring->outring, (void**)&txbuf, 1, NULL); 
-					 
-#endif
-			rte_pktmbuf_free(mbufs[i]);
-}//only allow the msg from 8080 pass
+				
+				udp_process(mbufs[i]);
 
 			}//udp if end
 			
@@ -511,6 +697,12 @@ if(ntohs(udphdr->src_port)==8888){//ntohs!!!!!! it act as a filter,两个字节�
 #endif
 		}// for end
 
+#if ENABLE_UDP_APP
+
+	udp_out(mbuf_pool);
+
+#endif
+
 
 	}//while 1 end
 
@@ -519,6 +711,228 @@ if(ntohs(udphdr->src_port)==8888){//ntohs!!!!!! it act as a filter,两个字节�
 }
 
 #endif
+
+
+#if ENABLE_UDP_APP
+
+
+
+static struct localhost * get_hostinfo_fromfd(int sockfd){
+
+	struct localhost *host;
+	for(host=lhost;host!=NULL;host=host->next){
+		if(sockfd==host->fd){
+			return host;//bind the local var host to one element of the global lhost
+		}
+	}
+	
+	return NULL;
+
+}
+
+
+
+
+static int nico_socket(__attribute__((unused)) int domain, int type, __attribute__((unused)) int protocol){
+	//distribute a fd and link a type to the socket
+
+	int fd=get_fd_frombitmap();
+	struct localhost *host = rte_malloc("localhost", sizeof (struct localhost),0);
+	if(host == NULL){
+		return -1;
+	}
+
+	memset(host, 0, sizeof(struct localhost));
+
+	host->fd=fd;
+	if(type==SOCK_DGRAM){
+		host->protocol=IPPROTO_UDP;
+	}
+	// else if(type==SOCK_STGREAM){
+	// 	host->protocol=IPPROTO_TCP; 
+	// }
+
+	//create receive buffer
+	host->rcvbuffer=rte_ring_create("recv buffer", RING_SIZE,rte_socket_id(),RING_F_SP_ENQ | RING_F_SC_DEQ);
+	if(host->rcvbuffer==NULL){
+		rte_free(host);
+		return -1;
+	}
+
+	//create send buffer
+	host->sndbuffer=rte_ring_create("send buffer", RING_SIZE,rte_socket_id(),RING_F_SP_ENQ | RING_F_SC_DEQ);
+	if(host->sndbuffer==NULL){
+		rte_ring_free(host->rcvbuffer);
+		rte_free(host);
+		return -1;
+	}
+
+	pthread_cond_t blank_cond=PTHREAD_COND_INITIALIZER;
+	rte_memcpy(&host->cond, &blank_cond, sizeof(pthread_cond_t));
+
+	pthread_mutex_t blank_mutex=PTHREAD_MUTEX_INITIALIZER;
+	rte_memcpy(&host->cond, &blank_mutex, sizeof(pthread_mutex_t));
+
+
+	LL_ADD(host, lhost); 
+
+	return fd;
+
+}
+
+static int nico_bind(int sockfd, const struct sockaddr *addr, __attribute__((unused)) socklen_t addrlen){
+	//bind the port, ipaddres and macadress
+	struct localhost *host = get_hostinfo_fromfd(sockfd);//find the host through the fd
+	if(host == NULL)return -1;
+
+	//bind here
+	const struct sockaddr_in *laddr = (const struct sockaddr_in *)addr;
+	host->localport = laddr->sin_port;
+	rte_memcpy(&host->localip, &laddr->sin_addr.s_addr, sizeof(uint32_t));
+	rte_memcpy(host->localmac, gSrcMac, RTE_ETHER_ADDR_LEN);
+
+	return 0;
+}
+
+static ssize_t nico_recvfrom(int sockfd, void *buf, size_t len, __attribute__((unused)) int flags, struct sockaddr *src_addr, __attribute__((unused)) socklen_t *addrlen){
+	struct localhost *host=get_hostinfo_fromfd(sockfd);
+	if(host==NULL)return -1;
+
+	unsigned char *ptr=NULL;
+	struct offload *ol=NULL;
+	int nb=-1;
+
+	//set mutex in the thread
+	pthread_mutex_lock(&host->mutex);
+	while((nb = rte_ring_mc_dequeue(host->rcvbuffer,(void **)&ol))<0){//take the offload from the recvbuffer
+		pthread_cond_wait(&host->cond, &host->mutex);
+	}
+	pthread_mutex_unlock(&host->mutex);
+
+	struct sockaddr_in *saddr = (struct sockaddr_in *)src_addr;
+	saddr->sin_port = ol->sport;
+	rte_memcpy(&saddr->sin_addr.s_addr, &ol->sip, sizeof(uint32_t));
+
+	if(len<ol->length){
+		rte_memcpy(buf, ol->data, len);
+		//malloc a new place to the data that we haven't take
+		ptr=rte_malloc("unsigned char", ol->length, 0);
+		rte_memcpy(ptr, ol->data+len, ol->length-len);
+		ol->length-=len;
+		rte_free(ol->data);
+		ol->data=ptr;
+
+		//enqueue the data that exceed the len:
+		rte_ring_mp_enqueue(host->rcvbuffer, ol);
+		return len;
+	}else{
+		
+		rte_memcpy(buf, ol->data, ol->length);
+		//printf("into here: ol->data------>%s\n",ol->data);
+		rte_free(ol->data);
+		rte_free(ol);
+		return ol->length;
+	}
+
+}
+
+static ssize_t nico_sendto(int sockfd, const void *buf, size_t len, __attribute__((unused)) int flags, const struct sockaddr *dest_addr, __attribute__((unused)) socklen_t addrlen){
+
+
+	struct localhost *host=get_hostinfo_fromfd(sockfd);
+	if(host==NULL)return -1;
+
+	const struct sockaddr_in *daddr = (const struct sockaddr_in *)dest_addr;
+
+	struct offload *ol=rte_malloc("offload", sizeof(struct offload), 0);
+	if(ol==NULL) return -1;
+
+	ol->dip=daddr->sin_addr.s_addr;
+	ol->dport=daddr->sin_port;
+	ol->sip=host->localip;
+	ol->sport=host->localport;
+	ol->length=len;
+	ol->data=rte_malloc("unsigned char*", len, 0);
+	if(ol->data==NULL){
+		rte_free(ol);
+		return -1;
+	}
+
+	rte_memcpy(ol->data, buf, len);
+
+	rte_ring_mp_enqueue(host->sndbuffer, ol);
+
+	return len;
+
+
+
+}
+
+
+static int nico_close(int fd){
+
+	struct localhost *host = get_hostinfo_fromfd(fd);//find the fd through host
+	if(host == NULL)return -1;
+
+	LL_REMOVE(host, lhost);
+	if(host->rcvbuffer){
+		rte_ring_free(host->rcvbuffer);	
+	}
+	if(host->sndbuffer){
+		rte_ring_free(host->sndbuffer);	
+	}
+	rte_free(host);
+
+}
+
+
+//create a udp server:
+static int udp_server_entry(__attribute__((unused))  void *arg) {
+
+	//create a socket
+	int connfd = nico_socket(AF_INET, SOCK_DGRAM, 0);
+	if (connfd == -1) {
+		printf("sockfd failed\n");
+		return -1;
+	} 
+
+	struct sockaddr_in localaddr, clientaddr; // struct sockaddr 
+	memset(&localaddr, 0, sizeof(struct sockaddr_in));
+
+	//bind port and ip adress
+	localaddr.sin_port = htons(8888);
+	localaddr.sin_family = AF_INET;
+	localaddr.sin_addr.s_addr = inet_addr("129.104.95.11"); 
+	nico_bind(connfd, (struct sockaddr*)&localaddr, sizeof(localaddr));
+
+	char buffer[UDP_APP_RECV_BUFFER_SIZE] = {0};
+	socklen_t addrlen = sizeof(clientaddr);
+	while (1) {
+
+		if (
+			//nrecvfrom(connfd, buffer, UDP_APP_RECV_BUFFER_SIZE, 0, (struct sockaddr*)&clientaddr, &addrlen) < 0
+			nico_recvfrom(connfd, buffer, UDP_APP_RECV_BUFFER_SIZE, 0, (struct sockaddr*)&clientaddr, &addrlen) < 0
+			) {
+
+			continue;
+
+		} else {
+
+			printf("recv from %s:%d, data:%s\n", inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port), buffer);
+			//nsendto(connfd, buffer, strlen(buffer), 0, (struct sockaddr*)&clientaddr, sizeof(clientaddr));
+			nico_sendto(connfd, buffer, strlen(buffer), 0, (struct sockaddr*)&clientaddr, sizeof(clientaddr));
+		}
+
+	}
+
+	nico_close(connfd);
+
+}
+
+
+#endif
+
+
 
 int main(int argc, char*argv[]){
 	if(rte_eal_init(argc,argv)<0){
@@ -566,9 +980,21 @@ int main(int argc, char*argv[]){
 #if ENABLE_MULTITHREAD
 
 	//启动线程，和cpu粘合的
-	rte_eal_remote_launch(pkt_process, mbuf_pool, rte_get_next_lcore(lcore_id, 1, 0));
+	lcore_id = rte_get_next_lcore(lcore_id, 1, 0);
+	rte_eal_remote_launch(pkt_process, mbuf_pool, lcore_id);
 
 #endif
+
+
+#if ENABLE_UDP_APP
+	
+	//启动线程，和cpu粘合的
+	lcore_id = rte_get_next_lcore(lcore_id, 1, 0);//bind another core
+	rte_eal_remote_launch(udp_server_entry, mbuf_pool, lcore_id);
+
+#endif
+
+//up to here, establish 3 thread, which are: main thread, thread for the protocol analyze and thread for udp server
 
 	while(1){
 		
@@ -580,7 +1006,7 @@ int main(int argc, char*argv[]){
 			rte_exit(EXIT_FAILURE,"Cloud not create mbuf\n");
 		}
 		else if(num_recvd>0){
-			rte_ring_sp_enqueue_burst(ring->inring, (void**)rx, num_recvd, NULL);
+			rte_ring_sp_enqueue_burst(ring->inring, (void**)rx, num_recvd, NULL);//receive msg and push into the ring buffer
 		}
 
 
@@ -588,7 +1014,8 @@ int main(int argc, char*argv[]){
 		struct rte_mbuf *tx[32];
 		unsigned nb_tx = rte_ring_sc_dequeue_burst(ring->outring, (void**)tx, BURST_SIZE, NULL);//dequeue the msg and send through the network card
 		if(nb_tx > 0){
-			rte_eth_tx_burst(gDpdkPortId, 0, tx, nb_tx);
+			rte_eth_tx_burst(gDpdkPortId, 0, tx, nb_tx);//send out
+			//release the memory
 			unsigned i=0;
 			for(i=0;i<nb_tx;i++){
 				rte_pktmbuf_free(tx[i]);
@@ -608,8 +1035,6 @@ int main(int argc, char*argv[]){
 		}
 
 #endif
-
-
 
 	}//while 1 end
 
