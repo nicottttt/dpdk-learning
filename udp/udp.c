@@ -909,22 +909,15 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
 	socklen_t addrlen = sizeof(clientaddr);
 	while (1) {
 
-		if (
-			//nrecvfrom(connfd, buffer, UDP_APP_RECV_BUFFER_SIZE, 0, (struct sockaddr*)&clientaddr, &addrlen) < 0
-			nico_recvfrom(connfd, buffer, UDP_APP_RECV_BUFFER_SIZE, 0, (struct sockaddr*)&clientaddr, &addrlen) < 0
-			) {
+		if (nico_recvfrom(connfd, buffer, UDP_APP_RECV_BUFFER_SIZE, 0, (struct sockaddr*)&clientaddr, &addrlen) < 0) {
 
 			continue;
 
 		} else {
-
 			printf("recv from %s:%d, data:%s\n", inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port), buffer);
-			//nsendto(connfd, buffer, strlen(buffer), 0, (struct sockaddr*)&clientaddr, sizeof(clientaddr));
 			nico_sendto(connfd, buffer, strlen(buffer), 0, (struct sockaddr*)&clientaddr, sizeof(clientaddr));
 		}
-
 	}
-
 	nico_close(connfd);
 
 }
